@@ -335,6 +335,8 @@ splits along four type-handling axes:
   literals above `f64`'s exact integer range must preserve the original
   value rather than round through float parsing.
 
+Streaming-only parser regressions for argument schemas, entities, and string boundaries are listed in `TOOLCALLING_STREAMING_V1_CASES.md` with their source PRs.
+
 ## `TOOLCALLING.batch.8` — Normal text interleaved with tool calls
 
 Model emits narration text before / after / between tool-call blocks.
