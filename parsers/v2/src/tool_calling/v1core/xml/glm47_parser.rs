@@ -5,7 +5,6 @@
 // Format: <tool_call>function_name<arg_key>param1</arg_key><arg_value>value1</arg_value></tool_call>
 // Reference: https://huggingface.co/zai-org/GLM-4.7/blob/main/chat_template.jinja
 
-use percent_encoding::percent_decode_str;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -472,6 +471,26 @@ fn get_param_schema_type<'a>(
         .find(|candidate| schema_has_type(schema, param, candidate))
 }
 
+// URI percent-decoding precedes JSON Pointer's ~0/~1 unescaping.
+fn local_ref_target<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let pointer = reference.strip_prefix('#')?;
+    if !pointer.contains('%') {
+        return root.pointer(pointer);
+    }
+    let mut bytes = pointer.bytes();
+    let mut decoded = Vec::with_capacity(pointer.len());
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            ((high << 4) | low) as u8
+        } else {
+            byte
+        });
+    }
+    root.pointer(std::str::from_utf8(&decoded).ok()?)
+}
+
 fn schema_has_type(root: &Value, schema: &Value, expected: &str) -> bool {
     let mut remaining = 1024;
     let matched = schema_type_match(root, schema, expected, 0, &mut remaining);
@@ -496,9 +515,7 @@ fn schema_type_match(
     let reference_hint = schema
         .get("$ref")
         .and_then(Value::as_str)
-        .and_then(|reference| reference.strip_prefix('#'))
-        .and_then(|pointer| percent_decode_str(pointer).decode_utf8().ok())
-        .and_then(|pointer| root.pointer(&pointer))
+        .and_then(|reference| local_ref_target(root, reference))
         .and_then(|target| schema_type_match(root, target, expected, depth + 1, remaining));
     let matches = |ty: &Value| {
         ty.as_str() == Some(expected) || (expected == "integer" && ty.as_str() == Some("number"))
@@ -683,6 +700,7 @@ mod tests {
             "$defs": {
                 "Scalar": {"type": ["string", "integer"]},
                 "postal code": {"type": "integer"},
+                "café+": {"type": "integer"},
                 "a/b~c": {"type": "integer"},
                 "Text": {"type": "string"},
                 "Loop": {"$ref": "#/$defs/Loop"}
@@ -690,6 +708,10 @@ mod tests {
             "properties": {
                 "narrow": {"$ref": "#/$defs/Scalar", "type": "integer"},
                 "encoded": {"$ref": "#/$defs/postal%20code"},
+                "utf8": {"$ref": "#/$defs/caf%c3%a9+"},
+                "invalid_utf8": {"$ref": "#/$defs/%FF"},
+                "incomplete": {"$ref": "#/$defs/%2"},
+                "invalid_hex": {"$ref": "#/$defs/%GG"},
                 "escaped": {"$ref": "#/$defs/a%7E1b%7E0c"},
                 "cycle": {"$ref": "#/$defs/Loop"},
                 "typed_cycle": {"$ref": "#/$defs/Loop", "type": "integer"},
@@ -699,6 +721,10 @@ mod tests {
         for (field, raw, expected) in [
             ("narrow", "42", serde_json::json!(42)),
             ("encoded", "42", serde_json::json!(42)),
+            ("utf8", "42", serde_json::json!(42)),
+            ("invalid_utf8", "42", serde_json::json!("42")),
+            ("incomplete", "42", serde_json::json!("42")),
+            ("invalid_hex", "42", serde_json::json!("42")),
             ("escaped", "42", serde_json::json!(42)),
             ("cycle", "42", serde_json::json!("42")),
             ("typed_cycle", "42", serde_json::json!(42)),
