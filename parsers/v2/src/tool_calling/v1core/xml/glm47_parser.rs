@@ -5,6 +5,7 @@
 // Format: <tool_call>function_name<arg_key>param1</arg_key><arg_value>value1</arg_value></tool_call>
 // Reference: https://huggingface.co/zai-org/GLM-4.7/blob/main/chat_template.jinja
 
+use percent_encoding::percent_decode_str;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -496,7 +497,8 @@ fn schema_type_match(
         .get("$ref")
         .and_then(Value::as_str)
         .and_then(|reference| reference.strip_prefix('#'))
-        .and_then(|pointer| root.pointer(pointer))
+        .and_then(|pointer| percent_decode_str(pointer).decode_utf8().ok())
+        .and_then(|pointer| root.pointer(&pointer))
         .and_then(|target| schema_type_match(root, target, expected, depth + 1, remaining));
     let matches = |ty: &Value| {
         ty.as_str() == Some(expected) || (expected == "integer" && ty.as_str() == Some("number"))
@@ -680,11 +682,15 @@ mod tests {
         let schema = serde_json::json!({
             "$defs": {
                 "Scalar": {"type": ["string", "integer"]},
+                "postal code": {"type": "integer"},
+                "a/b~c": {"type": "integer"},
                 "Text": {"type": "string"},
                 "Loop": {"$ref": "#/$defs/Loop"}
             },
             "properties": {
                 "narrow": {"$ref": "#/$defs/Scalar", "type": "integer"},
+                "encoded": {"$ref": "#/$defs/postal%20code"},
+                "escaped": {"$ref": "#/$defs/a%7E1b%7E0c"},
                 "cycle": {"$ref": "#/$defs/Loop"},
                 "typed_cycle": {"$ref": "#/$defs/Loop", "type": "integer"},
                 "payload": {"$ref": "#/$defs/Text"}
@@ -692,6 +698,8 @@ mod tests {
         });
         for (field, raw, expected) in [
             ("narrow", "42", serde_json::json!(42)),
+            ("encoded", "42", serde_json::json!(42)),
+            ("escaped", "42", serde_json::json!(42)),
             ("cycle", "42", serde_json::json!("42")),
             ("typed_cycle", "42", serde_json::json!(42)),
             ("payload", "{\"x\":1}", serde_json::json!("{\"x\":1}")),
